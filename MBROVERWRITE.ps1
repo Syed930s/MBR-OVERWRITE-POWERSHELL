@@ -1,5 +1,5 @@
-# MBR Overwrite Tool with Interactive Drive Selection
-# This script allows users to safely select a drive and wipe its MBR (Master Boot Record)
+# Full Drive Wipe Tool with Interactive Drive Selection
+# This script allows users to safely select a drive and wipe all sectors
 
 function Get-PhysicalDrives {
     <#
@@ -19,6 +19,7 @@ function Get-PhysicalDrives {
                     Name = "PhysicalDrive$($drive.Index)"
                     Model = $drive.Model
                     Size = [math]::Round($drive.Size / 1GB, 2)
+                    SizeBytes = $drive.Size
                     Status = $drive.Status
                 }
             }
@@ -40,6 +41,7 @@ function Get-PhysicalDrives {
                     Name = "PhysicalDrive$i"
                     Model = "Unknown"
                     Size = "Unknown"
+                    SizeBytes = 0
                     Status = "Online"
                 }
             } catch {
@@ -65,9 +67,9 @@ function Show-DriveMenu {
     
     while ($menuVisible) {
         Clear-Host
-        Write-Host "╔════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-        Write-Host "║           MBR OVERWRITE - SELECT TARGET DRIVE                   ║" -ForegroundColor Cyan
-        Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+        Write-Host "╔═══════════════════════════════════════════════════════════════════════╗"
+        Write-Host "║          FULL DRIVE WIPE - SELECT TARGET DRIVE                        ║" -ForegroundColor Cyan
+        Write-Host "╚═══════════════════════════════════════════════════════════════════════╝"
         Write-Host ""
         Write-Host "Use ↑↓ Arrow Keys to navigate | Press ENTER to select | Press ESC to cancel" -ForegroundColor Yellow
         Write-Host ""
@@ -121,24 +123,24 @@ function Confirm-DriveWipe {
     )
     
     Clear-Host
-    Write-Host "╔════════════════════════════════════════════════════════════════╗" -ForegroundColor Red
-    Write-Host "║                      ⚠️  WARNING ⚠️                              ║" -ForegroundColor Red
-    Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor Red
+    Write-Host "╔═══════════════════════════════════════════════════════════════════════╗"
+    Write-Host "║                      ⚠️  WARNING ⚠️                                    ║" -ForegroundColor Red
+    Write-Host "╚═══════════════════════════════════════════════════════════════════════╝"
     Write-Host ""
-    Write-Host "You are about to wipe the Master Boot Record (MBR) of:" -ForegroundColor Yellow
+    Write-Host "You are about to COMPLETELY WIPE the entire drive:" -ForegroundColor Yellow
     Write-Host ""
     Write-Host "  Drive: $($Drive.Name)" -ForegroundColor Cyan
     Write-Host "  Model: $($Drive.Model)" -ForegroundColor Cyan
     Write-Host "  Size:  $($Drive.Size)GB" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "This will overwrite the first 512 bytes (Sector 0) of the drive." -ForegroundColor Red
-    Write-Host "This action may render the drive unbootable!" -ForegroundColor Red
+    Write-Host "This will overwrite ALL sectors with zeros, destroying all data!" -ForegroundColor Red
+    Write-Host "This action CANNOT be undone!" -ForegroundColor Red
     Write-Host ""
-    Write-Host "Are you absolutely sure? Type 'yes' to confirm, or press any other key to cancel:" -ForegroundColor Yellow
+    Write-Host "Are you absolutely sure? Type 'yes, wipe everything' to confirm, or press any other key to cancel:" -ForegroundColor Yellow
     
     $confirmation = Read-Host
     
-    if ($confirmation -eq "yes") {
+    if ($confirmation -eq "yes, wipe everything") {
         return $true
     } else {
         Write-Host "Operation cancelled." -ForegroundColor Yellow
@@ -147,10 +149,10 @@ function Confirm-DriveWipe {
     }
 }
 
-function Wipe-DrivesMBR {
+function Wipe-FullDrive {
     <#
     .SYNOPSIS
-    Wipes the MBR of the selected drive
+    Wipes all sectors of the selected drive
     #>
     param(
         [hashtable]$Drive
@@ -158,10 +160,8 @@ function Wipe-DrivesMBR {
     
     try {
         Write-Host ""
-        Write-Host "Wiping MBR of $($Drive.Name)..." -ForegroundColor Cyan
-        
-        # Create 512 bytes of zeros
-        $mbrData = [byte[]]@(0) * 512
+        Write-Host "Beginning full drive wipe of $($Drive.Name)..." -ForegroundColor Cyan
+        Write-Host ""
         
         # Open the physical drive
         $drivePath = "\\.\$($Drive.Name)"
@@ -170,12 +170,35 @@ function Wipe-DrivesMBR {
             [System.IO.FileAccess]::Write)
         
         try {
-            # Write the zero bytes to sector 0
-            $driveHandle.Write($mbrData, 0, 512)
-            $driveHandle.Flush()
+            # Create a 1MB buffer of zeros (faster than writing byte by byte)
+            $bufferSize = 1MB
+            $zeroBuffer = [byte[]]@(0) * $bufferSize
             
-            Write-Host "✓ MBR successfully wiped!" -ForegroundColor Green
-            Write-Host "  512 bytes of zeros written to sector 0 of $($Drive.Name)" -ForegroundColor Green
+            # Get drive size
+            $driveSize = $driveHandle.Length
+            $bytesWritten = 0
+            
+            Write-Host "Total drive size: $([math]::Round($driveSize / 1GB, 2))GB"
+            Write-Host ""
+            
+            # Write zeros to entire drive
+            while ($bytesWritten -lt $driveSize) {
+                $remaining = $driveSize - $bytesWritten
+                $toWrite = if ($remaining -lt $bufferSize) { $remaining } else { $bufferSize }
+                
+                $driveHandle.Write($zeroBuffer, 0, $toWrite)
+                $bytesWritten += $toWrite
+                
+                # Show progress
+                $percentComplete = [math]::Round(($bytesWritten / $driveSize) * 100, 2)
+                Write-Host -NoNewline "`rProgress: $percentComplete% ($([math]::Round($bytesWritten / 1GB, 2))GB / $([math]::Round($driveSize / 1GB, 2))GB)"
+            }
+            
+            $driveHandle.Flush()
+            Write-Host ""
+            Write-Host ""
+            Write-Host "✓ Full drive wipe completed successfully!" -ForegroundColor Green
+            Write-Host "  All sectors on $($Drive.Name) have been overwritten with zeros" -ForegroundColor Green
             return $true
         } finally {
             $driveHandle.Close()
@@ -235,8 +258,8 @@ function Main {
         exit
     }
     
-    # Wipe the MBR
-    $result = Wipe-DrivesMBR -Drive $selectedDrive
+    # Wipe the entire drive
+    $result = Wipe-FullDrive -Drive $selectedDrive
     
     Write-Host ""
     Write-Host "Press any key to exit..." -ForegroundColor Gray
